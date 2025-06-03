@@ -28,14 +28,15 @@ import io.micronaut.core.util.ArrayUtils;
 import org.graalvm.nativeimage.ImageSingletons;
 import org.graalvm.nativeimage.hosted.Feature;
 import org.graalvm.nativeimage.hosted.RuntimeClassInitialization;
-import org.graalvm.nativeimage.hosted.RuntimeReflection;
-
+import org.graalvm.nativeimage.hosted.RegistrationCondition;
+import org.graalvm.nativeimage.dynamicaccess.ReflectiveAccess;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.lang.reflect.Executable;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Iterator;
@@ -55,9 +56,8 @@ class ServiceLoaderFeature implements Feature {
 
     @Override
     @SuppressWarnings("java:S1119")
-    public void beforeAnalysis(BeforeAnalysisAccess access) {
+    public void afterRegistration(AfterRegistrationAccess access) {
         configureForReflection(access);
-
         StaticServiceDefinitions staticServiceDefinitions = buildStaticServiceDefinitions(access);
         final Collection<Set<String>> allTypeNames = staticServiceDefinitions.serviceTypeMap().values();
         for (Set<String> typeNameSet : allTypeNames) {
@@ -119,9 +119,8 @@ class ServiceLoaderFeature implements Feature {
                                 }
                             }
                         }
-
+                        registerRuntimeReflection(RegistrationCondition.always(), c);
                         registerForReflectiveInstantiation(c);
-                        registerRuntimeReflection(c);
                     }
                     final Class<?> exec = access.findClassByName(typeName + "$Exec");
                     if (exec != null) {
@@ -142,7 +141,13 @@ class ServiceLoaderFeature implements Feature {
      * @param c The class
      */
     protected void registerForReflectiveInstantiation(Class<?> c) {
-        RuntimeReflection.registerForReflectiveInstantiation(c);
+        Constructor<?> nullaryConstructor;
+        try {
+            nullaryConstructor = c.getDeclaredConstructor();
+        } catch (NoSuchMethodException ex) {
+            throw new IllegalArgumentException("Class " + c.getTypeName() + " cannot be instantiated reflectively. It does not have a nullary constructor.");
+        }
+        access.getReflectiveAccess().register(RegistrationCondition.always(), nullaryConstructor);
     }
 
     /**
@@ -157,24 +162,24 @@ class ServiceLoaderFeature implements Feature {
      * Register a class for runtime reflection.
      * @param c The class
      */
-    protected void registerRuntimeReflection(Class<?> c) {
-        RuntimeReflection.register(c);
+    protected void registerRuntimeReflection(AfterRegistrationAccess access, Class<?>... classes) {
+        access.getReflectiveAccess().register(RegistrationCondition.always(), classes);
     }
 
     /**
      * Register a methods for runtime reflection.
-     * @param methods The methods
+     * @param methods The methodsf
      */
-    protected void registerRuntimeReflection(Method... methods) {
-        RuntimeReflection.register(methods);
+    protected void registerRuntimeReflection(AfterRegistrationAccess access, Executable... methods) {
+        access.getReflectiveAccess().register(RegistrationCondition.always(), methods);
     }
 
     /**
      * Register a field for runtime reflection.
      * @param fields The field
      */
-    protected void registerRuntimeReflection(Field... fields) {
-        RuntimeReflection.register(fields);
+    protected void registerRuntimeReflection(AfterRegistrationAccess access, Field... fields) {
+        access.getReflectiveAccess().register(RegistrationCondition.always(), fields);
     }
 
     /**
@@ -193,7 +198,7 @@ class ServiceLoaderFeature implements Feature {
      * @return The definitions
      */
     @NonNull
-    protected StaticServiceDefinitions buildStaticServiceDefinitions(BeforeAnalysisAccess access) {
+    protected StaticServiceDefinitions buildStaticServiceDefinitions(AfterRegistrationAccess access) {
         try {
             return new StaticServiceDefinitions(
                 MicronautMetaServiceLoaderUtils.findAllMicronautMetaServices(getClass().getClassLoader())
@@ -203,7 +208,7 @@ class ServiceLoaderFeature implements Feature {
         }
     }
 
-    private void configureForReflection(BeforeAnalysisAccess access) {
+    private void configureForReflection(AfterRegistrationAccess access) {
         Collection<GraalReflectionConfigurer> configurers = loadReflectionConfigurers(access);
 
         final GraalReflectionConfigurer.ReflectionConfigurationContext context = new GraalReflectionConfigurer.ReflectionConfigurationContext() {
@@ -214,24 +219,22 @@ class ServiceLoaderFeature implements Feature {
 
             @Override
             public void register(Class<?>... types) {
-                for (Class<?> type : types) {
-                    registerRuntimeReflection(type);
-                }
+                registerRuntimeReflection(access, types);
             }
 
             @Override
             public void register(Method... methods) {
-                registerRuntimeReflection(methods);
+                registerRuntimeReflection(access, methods);
             }
 
             @Override
             public void register(Field... fields) {
-                registerRuntimeReflection(fields);
+                registerRuntimeReflection(access, fields);
             }
 
             @Override
             public void register(Constructor<?>... constructors) {
-                RuntimeReflection.register(constructors);
+                registerRuntimeReflection(access, constructors);
             }
         };
         for (GraalReflectionConfigurer configurer : configurers) {
@@ -241,12 +244,10 @@ class ServiceLoaderFeature implements Feature {
     }
 
     @NonNull
-    protected Collection<GraalReflectionConfigurer> loadReflectionConfigurers(BeforeAnalysisAccess access) {
+    protected Collection<GraalReflectionConfigurer> loadReflectionConfigurers(AfterRegistrationAccess access) {
         Collection<GraalReflectionConfigurer> configurers = new ArrayList<>();
         SoftServiceLoader.load(GraalReflectionConfigurer.class, access.getApplicationClassLoader())
-                .collectAll(configurers);
+            .collectAll(configurers);
         return configurers;
     }
 }
-
-
